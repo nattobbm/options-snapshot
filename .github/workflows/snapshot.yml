@@ -1,0 +1,33 @@
+name: daily-options-snapshot
+
+on:
+  schedule:
+    # 21:45 UTC = 17:45 ET (夏令时) / 16:45 ET (冬令时), 全年都在收盘后
+    - cron: "45 21 * * 1-5"
+  workflow_dispatch:        # 手动触发按钮, 调试用
+
+permissions:
+  contents: write           # 允许把数据 commit 回仓库
+
+jobs:
+  snap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: snapshot
+        env:
+          SNAP_UA: "snap.py/1.0 (personal research; contact: mengengeng@gmail.com)"
+        run: python3 snap.py --skip-weekend
+
+      - name: commit
+        run: |
+          git config user.name  "snap-bot"
+          git config user.email "actions@github.com"
+          git add data
+          git diff --staged --quiet || git commit -m "snapshot $(TZ=America/New_York date +%F)"
+          git push
