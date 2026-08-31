@@ -1,0 +1,71 @@
+name: intraday-gex
+
+# 盘中 SPX GEX/DEX 采集。搬到 Actions 的原因：本地计划任务依赖电脑开机，
+# 2026-08-21/24/28 三个交易日全天丢帧（WakeToRun 唤不醒关机的机器）。
+#
+# ⚠️ 已知限制：GitHub Actions 的 schedule 不保证准时，高峰期常延迟 5–20 分钟，
+#    偶尔跳过。所以本 workflow 是**保底层**，本地采集器（每 5 分钟）继续跑作为高频层。
+#    两份数据格式完全一致，合并时按 snap_et 去重。
+#
+# cron 用 UTC。覆盖 ET 全交易时段的两种时制：
+#   夏令时 EDT(UTC-4)：09:30–16:00 ET = 13:30–20:00 UTC
+#   冬令时 EST(UTC-5)：09:30–16:00 ET = 14:30–21:00 UTC
+# 故取 13:00–21:00 UTC 全覆盖，由脚本内的 in_session() 用真实 ET 时间做最终判断
+# （非交易时段直接退出，不发请求、不 commit）。
+
+on:
+  schedule:
+    - cron: "*/15 13-21 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "忽略交易时段判断，强制采一帧（调试用）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:                # 上一帧还没 commit 完就不开下一帧，避免 push 冲突
+  group: intraday-gex
+  cancel-in-progress: false
+
+jobs:
+  snap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: collect
+        id: collect
+        env:
+          SNAP_UA: "intraday.py/1.0 (personal research; contact: mengengeng@gmail.com)"
+        run: |
+          if [ "${{ inputs.force }}" = "true" ]; then
+            python3 intraday.py --force
+          else
+            python3 intraday.py
+          fi
+
+      - name: commit
+        run: |
+          git config user.name  "intraday-bot"
+          git config user.email "actions@github.com"
+          git add data/intraday
+          if git diff --staged --quiet; then
+            echo "无新数据（非交易时段或坏帧被隔离），跳过 commit"
+            exit 0
+          fi
+          git commit -m "intraday $(TZ=America/New_York date '+%F %H:%M') [skip ci]"
+          # schedule job 之间可能撞车，rebase 后重试一次
+          for i in 1 2 3; do
+            git pull --rebase --autostash origin main && git push && exit 0
+            echo "push 冲突，第 $i 次重试"
+            sleep $((RANDOM % 10 + 5))
+          done
+          exit 1
