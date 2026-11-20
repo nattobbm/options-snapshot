@@ -64,6 +64,10 @@ def normalize(ticker: str) -> str:
     return "_" + t if t in INDEX_SYMBOLS else t
 
 
+class CboeBlocked(RuntimeError):
+    """CBOE 前面的门（Cloudflare）把自动取数拦了。不是程序坏了，重跑没用。"""
+
+
 def fetch(symbol: str, retries: int = 3, timeout: int = 30) -> dict:
     url = f"{BASE}/{symbol}.json"
     last = None
@@ -75,6 +79,12 @@ def fetch(symbol: str, retries: int = 3, timeout: int = 30) -> dict:
             if raw[:2] == b"\x1f\x8b":          # 有时候直接给 gzip
                 raw = gzip.decompress(raw)
             return json.loads(raw.decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            if e.code == 403:                   # 2026-11-19：CBOE 加了门，重试没用
+                raise CboeBlocked(f"{symbol}: CBOE 403 被拦") from e
+            last = e
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
         except Exception as e:                  # noqa: BLE001 — 网络层什么都可能抛
             last = e
             if attempt < retries - 1:
@@ -177,6 +187,7 @@ def main() -> int:
 
     tickers = load_tickers(args)
     ok, skipped, failed = [], [], []
+    blocked = []
 
     for raw_t in tickers:
         sym = normalize(raw_t)
@@ -209,6 +220,9 @@ def main() -> int:
             size = os.path.getsize(chain_path) / 1024
             print(f"[ok]   {sym} {sdate}  {n} 份合约  {size:.0f}KB")
             ok.append(sym)
+        except CboeBlocked as e:
+            print(f"[拦了] {e}", file=sys.stderr)
+            failed.append(sym); blocked.append(sym)
         except Exception as e:                   # noqa: BLE001
             print(f"[FAIL] {sym}: {e}", file=sys.stderr)
             failed.append(sym)
@@ -218,6 +232,10 @@ def main() -> int:
     if failed:
         print("失败清单: " + ", ".join(failed), file=sys.stderr)
     # 只有全军覆没才算这次运行失败, 免得单票退市天天报警
+    if failed and len(blocked) == len(failed) and not ok:
+        # 全是被 CBOE 拦的：记一行警告正常收场，不发 run failed。数据源等她定。
+        print(f"::warning::CBOE 403：{len(blocked)} 个标的全被拦，今天没有快照")
+        return 0
     return 1 if (failed and not ok and not skipped) else 0
 
 

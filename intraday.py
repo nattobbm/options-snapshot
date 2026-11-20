@@ -212,7 +212,13 @@ def main():
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Exception:
+    except Exception as _e:
+        # 2026-11-19 晚：CBOE 加了一道门（Cloudflare），自动取数一律 403。重跑没用，
+        # 记一行警告正常收场，免得盘中每 15 分钟一封 run failed。数据源等她定。
+        import urllib.error as _ue
+        if isinstance(_e, _ue.HTTPError) and _e.code == 403:
+            print("::warning::CBOE 403：取数被拦，这一拍没有数据")
+            sys.exit(0)
         import traceback
         traceback.print_exc()
         sys.exit(1)
